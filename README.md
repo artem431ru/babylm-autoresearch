@@ -1,57 +1,136 @@
-# BabyLM AutoResearch: Does Experiment History Help an LLM Agent?
+# BabyLM AutoResearch
 
-Research pilot on **history-aware hyperparameter search** for a small causal language model.
+**Исследовательский проект: помогает ли история экспериментов LLM-агенту эффективнее подбирать гиперпараметры языковой модели?**
 
-The agent selects training recipes from a fixed discrete search space. We compare three methods under the same training-token budget: random search, an LLM agent without prior trial outcomes, and an LLM agent with full experiment history.
+В проекте реализован автоматизированный поиск гиперпараметров для небольшой авторегрессионной языковой модели. LLM-агент выбирает следующую конфигурацию обучения, получает измеренный результат и, в одном из режимов, использует историю предыдущих попыток. Цель — проверить, улучшает ли такая обратная связь качество поиска при одинаковом бюджете обучения.
 
-## Results
+Агент **не изменяет архитектуру нейросети и исходный код обучения**: он выбирает комбинации параметров из фиксированного пространства поиска.
 
-| Search method | Held-out test loss ↓ | Perplexity ↓ |
+## Основной результат
+
+После поиска лучшие конфигурации были обучены заново в течение **2048 шагов** на трёх новых seed (46, 47, 48) и оценены на внутренней отложенной тестовой выборке.
+
+| Метод | Test Loss ↓ (среднее ± SD) | Perplexity ↓ |
 |---|---:|---:|
-| Baseline | 4.5466 | 94.31 |
-| Random search | 4.4547 | 86.03 |
-| LLM without history | 4.4980 | 89.84 |
-| **LLM with history** | **4.4022** | **81.63** |
+| Базовая конфигурация | 4,5466 ± 0,0021 | 94,31 |
+| Случайный поиск | 4,4547 ± 0,0018 | 86,03 |
+| LLM-агент без истории | 4,4980 ± 0,0014 | 89,84 |
+| **LLM-агент с историей** | **4,4022 ± 0,0043** | **81,63** |
 
-Results are means across **three new training seeds (46, 47, 48)** after retraining the selected recipes for 2,048 steps. The history-aware agent improves test cross-entropy by **1.18% over random search** and **3.18% over baseline**. Lower is better.
+Агент с историей показал снижение Test Loss на **1,18% относительно случайного поиска** и на **3,18% относительно базовой конфигурации**. На всех трёх новых seed направление преимущества сохранилось.
 
-![Held-out test loss by seed](figures/test_loss_by_seed.png)
+![Сравнение Test Loss по трём новым seed](figures/test_loss_by_seed.png)
 
-**Important:** This is an **internal held-out line-group split**, not a document-disjoint test or an official BabyLM benchmark score. We do not claim generalization beyond this setup.
+> **Ограничение:** это результаты на *внутреннем* отложенном наборе, сформированном по группам строк. Он не гарантирует независимости документов и **не является официальным бенчмарком BabyLM**. Три seed недостаточны для широких статистических обобщений.
 
-## Method
+## Постановка эксперимента
 
-- Architecture: 2-layer causal Transformer, 4 attention heads, embedding dimension 128, approximately 1.44M parameters.
-- Search space: learning rate, weight decay, dropout and warmup fraction (108 total combinations including baseline).
-- Search: 5 new recipes + common baseline per method and seed; repeated on seeds 43, 44, 45.
-- Fixed short-run budget: 512 steps × batch 8 × context 128 = 524,288 training tokens per recipe.
-- Recipe selection: best final internal dev loss for each method, selected **before** looking at test results.
-- Transfer: 2,048 training steps from scratch, on three new seeds.
-- Evaluation: fixed held-out test set, 343,546 scored tokens, next-token cross-entropy.
-- LLM used for the pilot: `gpt-6-luna` through a third-party Responses-compatible gateway.
+**Модель:** causal Transformer, 2 слоя, 4 головы внимания, размерность эмбеддингов 128, около 1,44 млн параметров. Размер словаря — 8000 токенов.
 
-## Main finding
+**Подбираемые гиперпараметры:**
 
-Giving the LLM agent the outcomes of earlier trials helped it search more effectively in this pilot. Full history was not free: it consumed approximately **28.6% more API tokens** than the no-history LLM condition. A compact-history ablation is the next planned experiment.
+| Параметр | Допустимые значения |
+|---|---|
+| Learning rate | `0.0005`, `0.001`, `0.002`, `0.003` |
+| Weight decay | `0`, `0.01`, `0.1` |
+| Dropout | `0`, `0.1`, `0.2` |
+| Warmup fraction | `0`, `0.1`, `0.2` |
 
-## Documentation and evidence
+Всего **108 комбинаций**, включая baseline.
 
-- [`REPORT_RU.md`](docs/REPORT_RU.md) — complete Russian research report.
-- [`REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) — commands, hashes, assumptions and missing dependencies.
-- [`NEXT_EXPERIMENT.md`](docs/NEXT_EXPERIMENT.md) — preregistered plan for compact-history ablation.
-- `results/crs_repeat_comparison.json` — short search results.
-- `results/long_validation.json` — long validation results.
-- `results/test_results.json` — held-out test results.
-- `results/tables/` — derived CSVs.
+Сравнивались три стратегии:
 
-To reproduce the reported tables **offline**, without training or an API key:
+1. **Random Search:** случайный выбор конфигураций без LLM.
+2. **LLM без истории:** агент видит базовый результат, но не получает метрики предыдущих новых попыток.
+3. **LLM с историей:** агент видит конфигурации и результаты предыдущих попыток и использует их при выборе следующей.
 
-```bash
+Для каждой стратегии проведены три серии поиска (seed **43, 44, 45**): общий baseline и по пять новых конфигураций на серию. Каждая короткая тренировка выполнялась **512 шагов** с `batch_size=8` и `block_size=128`. Лучшие рецепты выбирались по итоговому `dev loss` **до просмотра тестовых результатов**.
+
+Для пилота использовалась модель `gpt-6-luna` через сторонний шлюз, совместимый с Responses API. Полная история увеличила расход API-токенов примерно на **28,6%** относительно режима без истории. Расход API-токенов не следует смешивать с количеством токенов, на которых обучалась языковая модель.
+
+## Структура репозитория
+
+```text
+babylm-autoresearch/
+├── agent_crs.py             # LLM-поиск, режимы с историей и без неё, Random Search
+├── train.py                 # Обучение небольшой языковой модели
+├── runner.py                # Запуск и учёт экспериментов
+├── prepare_data.py          # Подготовка данных и токенизатора
+├── validate_long.py        # Проверка лучших конфигураций на 2048 шагах
+├── evaluate_test.py        # Оценка на отложенном тесте
+├── scripts/
+│   └── analyze_results.py  # Повторный расчёт таблиц по сохранённым JSON
+├── docs/                    # Исследовательский отчёт и протоколы
+├── figures/                 # Графики
+├── results/                 # Итоговые JSON и CSV
+└── requirements.txt         # Зависимости Python
+```
+
+Дополнительные скрипты `agent.py`, `run_agent.py`, `test_agent.py` и документ `README_AGENT.md` сохранены в репозитории как отдельные компоненты ранних экспериментов.
+
+## Быстрая проверка результатов
+
+Для проверки опубликованных таблиц **не нужны API-ключ, датасет или обучение модели**.
+
+```powershell
+python -m pip install -r requirements.txt
 python scripts/analyze_results.py
 ```
 
-For full training replication, use the repository source files (`train.py`, `runner.py`, `agent_crs.py`, `prepare_data.py`, `validate_long.py`, `evaluate_test.py`) and recreate the exact processed dataset. The original training/evaluation checkpoints are not distributed. Code and data hashes are recorded in the results files.
+Скрипт пересчитывает агрегированные показатели по JSON в `results/` и формирует CSV-таблицы.
 
-## Reproduction and safety notes
+## Как запустить собственный эксперимент
 
-Searches can incur paid LLM API usage; a `--dry-run` mode exists. Never commit API keys, raw gateway responses containing sensitive information, checkpoints with private data, or personal paths. The gateway in the original experiment was third-party, not an official OpenAI endpoint.
+Команды ниже рассчитаны на **PowerShell в Windows**, из корня репозитория.
+
+**1. Создать окружение и установить зависимости:**
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+**2. Подготовить корпус:**
+
+```powershell
+python prepare_data.py --download
+```
+
+Данные загружаются из зафиксированной ревизии `BabyLM-community/BabyLM-2026-Strict-Small`; локальные файлы в `data/` не публикуются в Git.
+
+**3. Проверить параметры запуска без обучения:**
+
+```powershell
+python agent_crs.py --mode random --name demo_random_s43 --seed 43 --search-seed 143 --trials 5 --max-steps 512 --threads 10 --dry-run
+```
+
+**4. Запустить случайный поиск:**
+
+```powershell
+python agent_crs.py --mode random --name demo_random_s43 --seed 43 --search-seed 143 --trials 5 --max-steps 512 --threads 10
+```
+
+Для режимов `agent` и `no-history` нужен доступ к совместимому API, настроенная переменная окружения `CRS_OAI_KEY` и выбранная модель. **Эти режимы могут расходовать платные API-токены.** Проверяйте адрес шлюза через `--base-url`; не храните ключи в коде и не публикуйте их на GitHub.
+
+```powershell
+python agent_crs.py --help
+```
+
+Одинаковые seed помогают контролировать случайность обучения, но не гарантируют полностью идентичные результаты между разными версиями библиотек, устройствами и независимыми LLM-вызовами.
+
+## Материалы исследования
+
+- [Полный отчёт на русском](docs/REPORT_RU.md) — гипотеза, методика, результаты, ограничения.
+- [Воспроизводимость](docs/REPRODUCIBILITY.md) — протокол, хэши исходников и данных, команды.
+- [План следующего эксперимента](docs/NEXT_EXPERIMENT.md) — сравнение полной и сокращённой истории.
+- [Результаты короткого поиска](results/crs_repeat_comparison.json).
+- [Результаты длинной проверки](results/long_validation.json).
+- [Результаты отложенного теста](results/test_results.json).
+- [Таблицы CSV](results/tables/).
+
+## Выводы и дальнейшая работа
+
+В данном пилоте доступ к истории экспериментов помог LLM-агенту находить более удачные конфигурации обучения, чем случайный поиск и агент без истории. При этом история увеличивает расход API-токенов, а результаты пока ограничены одной моделью, одним корпусом и небольшим числом повторений.
+
+Следующий этап — сравнить **полную историю**, **сжатую историю** и **отсутствие истории** при одинаковом бюджете, отдельно учитывая качество поиска и стоимость LLM-вызовов.
